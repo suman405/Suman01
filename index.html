@@ -259,6 +259,7 @@ footer b{color:var(--ink2)}
         <button class="btn on" id="btnRotate">⟳ Auto-rotate</button>
         <button class="btn" id="btnExplode">⬍ Explode floors</button>
         <button class="btn" id="btnFly">✈ Fly-through</button>
+        <button class="btn on" id="btnLabels">🏷 Labels</button>
       </div>
       <div class="grp">
         <button class="btn" id="btnCycle">🌗 Day/Night cycle</button>
@@ -279,6 +280,8 @@ footer b{color:var(--ink2)}
       <div class="row"><span class="sw delayed"></span>⏰ Delayed</div>
       <div class="row"><span class="sw quality"></span>🔍 Quality hold</div>
       <div class="row"><span class="sw planned"></span>· Planned / not started</div>
+      <div id="legTotal" style="margin-top:9px;padding-top:8px;border-top:1px solid var(--line);color:var(--ink2)"></div>
+      <div style="margin-top:6px;font-size:10.5px;color:var(--ink3)">Hover a tower or zoom in<br>to see floor-wise expenses</div>
     </div>
 
     <div id="floorTip"></div>
@@ -701,6 +704,7 @@ function fireworks(ms){
 
 /* boot */
 buildKPIs(); buildExceptions(); buildCharts(); buildPipes();
+$("#legTotal").innerHTML=`TOTAL EXPENSES<br><b style="color:var(--gold);font-size:15px">${CR(TOT.actual)}</b> <span style="color:var(--ink3)">of ${CR(TOT.budget)}</span>`;
 new IntersectionObserver((en,obs)=>{if(en[0].isIntersecting){animateKPIs();obs.disconnect();}},
   {threshold:.3}).observe($("#kpis"));
 </script>
@@ -754,7 +758,24 @@ const FH=1.7;
 const glassMat=new THREE.MeshStandardMaterial({color:0x24507e,roughness:.28,metalness:.6,
   emissive:0x1a2c4a,emissiveIntensity:.25});
 const floorMeshes=[], halosByMode={}, towerGroups={};
-const beacons=[];
+const beacons=[], floorLabels=[], towerLabels=[];
+function mkLabel(lines,border,W,H,fs){
+  const c=document.createElement("canvas"); c.width=W; c.height=H; const x=c.getContext("2d");
+  x.fillStyle="rgba(10,20,40,.88)"; x.strokeStyle=border; x.lineWidth=6;
+  x.beginPath(); x.roundRect?x.roundRect(4,4,W-8,H-8,18):x.rect(4,4,W-8,H-8); x.fill(); x.stroke();
+  x.textBaseline="middle";
+  if(lines.length===2&&H<150){ // single row: name left, value right
+    x.font=`700 ${fs}px Segoe UI,Arial`; x.fillStyle=lines[0][1]; x.textAlign="left"; x.fillText(lines[0][0],22,H/2+2);
+    x.fillStyle=lines[1][1]; x.textAlign="right"; x.fillText(lines[1][0],W-22,H/2+2);
+  } else {
+    x.textAlign="center";
+    lines.forEach(([t,col],i)=>{x.font=`${i?600:700} ${i?fs*.8:fs}px Segoe UI,Arial`;x.fillStyle=col;
+      x.fillText(t,W/2,H*(i+0.5)/lines.length+2);});
+  }
+  const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; tex.anisotropy=4;
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false,depthWrite:false,toneMapped:false}));
+  s.renderOrder=10; return s;
+}
 function buildTower(def,x,z,w){
   const grp=new THREE.Group(); grp.position.set(x,0,z); towerGroups[def.id]=grp;
   def.floors.forEach((f,i)=>{
@@ -769,6 +790,11 @@ function buildTower(def,x,z,w){
       new THREE.LineBasicMaterial({color:f.status==="planned"?0x3a5a8a:GLOW[f.status],
         transparent:true,opacity:f.status==="planned"?.5:.9}));
     m.add(edges);
+    const lab=mkLabel([[`${def.id}-F${f.n}`,"#e8eef7"],[`₹ ${f.actual.toFixed(2)} Cr`,"#d4af37"]],
+      STATUS[f.status].chart,512,112,46);
+    lab.scale.set(4.6,1.0,1); lab.center.set(0,0.5);
+    lab.material.opacity=0; lab.visible=false;
+    m.add(lab); floorLabels.push({s:lab,d:w/2+0.9,t:def.id});
     (halosByMode[STATUS[f.status].mode] ??= []).push({halo,seed:i*0.7+x*0.1});
     grp.add(m); floorMeshes.push(m);
   });
@@ -779,6 +805,10 @@ function buildTower(def,x,z,w){
     new THREE.MeshBasicMaterial({color:0xff3b30}));
   beacon.position.y=def.floors.length*FH+1.5; grp.add(beacon);
   beacons.push(beacon);
+  const spent=def.floors.reduce((s,f)=>s+f.actual,0), bud=def.floors.reduce((s,f)=>s+f.budget,0);
+  const tl=mkLabel([[def.name,"#e8eef7"],[`Total expenses ₹ ${spent.toFixed(1)} Cr / ₹ ${bud.toFixed(1)} Cr`,"#d4af37"]],
+    "#d4af37",1024,220,64);
+  tl.scale.set(12,2.6,1); tl.position.y=def.floors.length*FH+4.6; grp.add(tl); towerLabels.push(tl);
   scene.add(grp);
 }
 buildTower(TOWERS[0],0,0,11);
@@ -953,11 +983,11 @@ canvas.addEventListener("pointermove",e=>{
     tip.style.display="block";
     tip.style.left=(e.clientX-stage.getBoundingClientRect().left+14)+"px";
     tip.style.top=(e.clientY-stage.getBoundingClientRect().top-10)+"px";
-    tip.innerHTML=`<b>${m.userData.tower} · Floor ${f.n}</b><br>${s.icon} ${s.label} · ${f.progress}%`;
+    tip.innerHTML=`<b>${m.userData.tower} · Floor ${f.n}</b><br>${s.icon} ${s.label} · ${f.progress}%<br>Expenses ₹ ${f.actual.toFixed(2)} Cr of ₹ ${f.budget.toFixed(2)} Cr`;
     canvas.style.cursor="pointer";
   } else { tip.style.display="none"; canvas.style.cursor="grab"; }
 },{passive:true});
-canvas.addEventListener("pointerleave",()=>{tip.style.display="none";});
+canvas.addEventListener("pointerleave",()=>{tip.style.display="none";hovered=null;});
 canvas.addEventListener("pointerdown",e=>{downAt=[e.clientX,e.clientY];});
 canvas.addEventListener("pointerup",e=>{
   if(!downAt) return;
@@ -1040,12 +1070,28 @@ const HALO_FN={
   "shimmer":   (t,s)=>.18+.10*Math.sin(t*1.5+s),
   "dim":       ()=>.04
 };
-const _v=new THREE.Vector3();
+const _v=new THREE.Vector3(), _dir=new THREE.Vector3();
+let labelsOn=true;
+const LABEL_DIST=60;
+const towerCenters=TOWERS.map(t=>{const g=towerGroups[t.id];
+  return {id:t.id,p:new THREE.Vector3(g.position.x,t.floors.length*FH/2,g.position.z)};});
+btn("btnLabels",on=>{labelsOn=on;floorLabels.forEach(l=>l.s.visible=on);towerLabels.forEach(s=>s.visible=on);});
 function tick(){
   requestAnimationFrame(tick);
   if(!visible||document.hidden) return;
   const dt=Math.min(clock.getDelta(),.05), t=clock.elapsedTime;
   controls.update();
+  if(labelsOn){ // keep floor labels on the viewer's right of each tower so the building never hides them
+    camera.getWorldDirection(_dir); _dir.set(-_dir.z,0,_dir.x).normalize();
+    // floor labels only for a tower that is hovered or that the camera is zoomed in on
+    const hovT=hovered?hovered.userData.tower:null, near={};
+    towerCenters.forEach(c=>near[c.id]=hovT===c.id||camera.position.distanceTo(c.p)<LABEL_DIST);
+    const k=Math.min(1,dt*8);
+    floorLabels.forEach(l=>{
+      l.s.position.set(_dir.x*l.d,0,_dir.z*l.d);
+      const m=l.s.material; m.opacity+=((near[l.t]?1:0)-m.opacity)*k; l.s.visible=m.opacity>.02;
+    });
+  }
   if(autoCycle) setTime(T+dt*0.6);
   for(const mode in halosByMode){const fn=HALO_FN[mode];
     halosByMode[mode].forEach(h=>h.halo.material.opacity=Math.max(fn(t,h.seed),0));}
